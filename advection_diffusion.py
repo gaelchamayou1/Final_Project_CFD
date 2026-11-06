@@ -1,20 +1,19 @@
 import numpy as np
-import time
 from numba import njit
 
 @njit(fastmath=True)
 def compute_prediction(u, v, dx, dy, dt, nu):
     """
-    Calcule la vitesse prédite (u**, v**) en combinant :
-      - Advection : schéma Upwind 1er ordre
-      - Diffusion : schéma FTCS centré 2nd ordre
-    Entrées :
-        u, v   : Tableaux 2D (Ny, Nx) des vitesses au temps n
-        dx, dy : Pas d'espace (m)
-        dt     : Pas de temps (s)
-        nu     : Viscosité cinématique (m²/s)
-    Sorties :
-        u_ss, v_ss : Champs de vitesse prédits (u**, v**)
+    Computes the predicted velocity (u**, v**) by combining:
+      - Advection: 1st-order upwind scheme
+      - Diffusion: 2nd-order centred FTCS scheme
+    Inputs:
+        u, v   : 2D arrays (Ny, Nx) of the velocities at time n
+        dx, dy : Grid spacing (m)
+        dt     : Time step (s)
+        nu     : Kinematic viscosity (m²/s)
+    Outputs:
+        u_ss, v_ss : Predicted velocity fields (u**, v**)
     """
     Ny, Nx = u.shape
     u_ss = np.copy(u)
@@ -28,26 +27,26 @@ def compute_prediction(u, v, dx, dy, dt, nu):
             u_c = u[j, i]
             v_c = v[j, i]
 
-            # 1. Advection Upwind (1er ordre)
-            # Dérivées de u
+            # 1. Upwind advection (1st order)
+            # Derivatives of u
             du_dx = (u_c - u[j, i - 1]) / dx if u_c > 0.0 else (u[j, i + 1] - u_c) / dx
             du_dy = (u_c - u[j - 1, i]) / dy if v_c > 0.0 else (u[j + 1, i] - u_c) / dy
 
-            # Dérivées de v
+            # Derivatives of v
             dv_dx = (v_c - v[j, i - 1]) / dx if u_c > 0.0 else (v[j, i + 1] - v_c) / dx
             dv_dy = (v_c - v[j - 1, i]) / dy if v_c > 0.0 else (v[j + 1, i] - v_c) / dy
 
             adv_u = u_c * du_dx + v_c * du_dy
             adv_v = u_c * dv_dx + v_c * dv_dy
 
-            # 2. Diffusion Centrée (2nd ordre)
+            # 2. Centred diffusion (2nd order)
             diff_u = (u[j, i + 1] - 2.0 * u_c + u[j, i - 1]) / dx2 + \
                      (u[j + 1, i] - 2.0 * u_c + u[j - 1, i]) / dy2
 
             diff_v = (v[j, i + 1] - 2.0 * v_c + v[j, i - 1]) / dx2 + \
                      (v[j + 1, i] - 2.0 * v_c + v[j - 1, i]) / dy2
 
-            # 3. Étape d'Euler explicite
+            # 3. Explicit Euler step
             u_ss[j, i] = u_c + dt * (-adv_u + nu * diff_u)
             v_ss[j, i] = v_c + dt * (-adv_v + nu * diff_v)
 
@@ -57,23 +56,23 @@ def compute_prediction(u, v, dx, dy, dt, nu):
 @njit(fastmath=True)
 def apply_boundary_conditions(u_ss, v_ss, U_lid):
     """
-    Applique les conditions aux limites sur le champ prédit (u**, v**).
-    - Parois fixes : u = 0, v = 0 (Bas, Gauche, Droite)
-    - Paroi supérieure mobile : u = U_lid(t), v = 0 (Haut)
+    Applies the boundary conditions to the predicted field (u**, v**).
+    - Fixed walls: u = 0, v = 0 (bottom, left, right)
+    - Moving top wall: u = U_lid(t), v = 0 (top)
     """
-    # Bas (y = 0)
+    # Bottom (y = 0)
     u_ss[0, :] = 0.0
     v_ss[0, :] = 0.0
 
-    # Haut (y = Ly)
+    # Top (y = Ly)
     u_ss[-1, :] = U_lid
     v_ss[-1, :] = 0.0
 
-    # Gauche (x = 0)
+    # Left (x = 0)
     u_ss[:, 0] = 0.0
     v_ss[:, 0] = 0.0
 
-    # Droite (x = Lx)
+    # Right (x = Lx)
     u_ss[:, -1] = 0.0
     v_ss[:, -1] = 0.0
 
@@ -82,16 +81,16 @@ def apply_boundary_conditions(u_ss, v_ss, U_lid):
 
 def step_prediction(u, v, dx, dy, dt, nu, t, U_ref=1.0, L=1.0):
     """
-    Interface appelée par la boucle temporelle globale dans main.py.
+    Interface called by the global time loop in main.py.
     """
-    # Loi de rampe du couvercle : U_t(t) = U * (1 - exp(-t / tau)) avec tau = L / U
+    # Lid ramp law: U_t(t) = U * (1 - exp(-t / tau)) with tau = L / U
     tau_lid = L / U_ref
     U_lid = U_ref * (1.0 - np.exp(-t / tau_lid))
 
-    # Étape 1 + 2 : Advection + Diffusion
+    # Steps 1 + 2: advection + diffusion
     u_ss, v_ss = compute_prediction(u, v, dx, dy, dt, nu)
 
-    # Conditions aux limites
+    # Boundary conditions
     u_ss, v_ss = apply_boundary_conditions(u_ss, v_ss, U_lid)
 
     return u_ss, v_ss
