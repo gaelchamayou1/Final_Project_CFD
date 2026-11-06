@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# Simulation outputs
+results/
+output/
+*.npy
+*.npz
+*.vtk
+*.vtu
+*.h5
+*.mp4
+*.gif
