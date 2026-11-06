@@ -95,34 +95,3 @@ def step_prediction(u, v, dx, dy, dt, nu, t, U_ref=1.0, L=1.0):
     u_ss, v_ss = apply_boundary_conditions(u_ss, v_ss, U_lid)
 
     return u_ss, v_ss
-
-
-
-
-# Paramètres physiques et numériques (Cavité Re = 100)
-Re = 100.0
-L = 1.0
-U_ref = 1.0
-nu = U_ref * L / Re
-
-Nx, Ny = 65, 65
-dx = L / (Nx - 1)
-dy = L / (Ny - 1)
-
-# Vérification du pas de temps sous critères CFL et Fourier
-dt_cfl = 0.5 * min(dx, dy) / U_ref
-dt_fo = 0.2 * min(dx**2, dy**2) / nu
-dt = min(dt_cfl, dt_fo)
-
-u = np.zeros((Ny, Nx), dtype=np.float64)
-v = np.zeros((Ny, Nx), dtype=np.float64)
-
-# Test d'exécution
-t_start = time.time()
-u_ss, v_ss = step_prediction(u, v, dx, dy, dt, nu, t=0.5, U_ref=U_ref, L=L)
-t_elapsed = time.time() - t_start
-
-print(f"Validation du module Prédiction (Étapes 1+2) réussie.")
-print(f"Pas de temps dt retenu   : {dt:.6f} s")
-print(f"Temps d'exécution        : {t_elapsed*1e3:.3f} ms")
-print(f"Vitesse max u** obtenue  : {np.max(u_ss):.4f} m/s")
