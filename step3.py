@@ -1,20 +1,32 @@
-"""Étape 3 du TP CFD : équation de Poisson, méthode de Jacobi.
+"""Calcul de pression de la cavité : étape 3 uniquement, avec Jacobi.
 
-Exécution de l'exemple : python poisson_jacobi.py
-Dépendance : numpy. Ajouter --plot pour afficher des figures (matplotlib).
+Dépendance : NumPy (python -m pip install numpy).
+Ce module est à importer dans votre programme CFD ; il ne fabrique aucune donnée.
+Il ne calcule ni l'advection, ni la diffusion, ni la correction des vitesses.
 
-On résout Laplacien(p) = b dans [0, Lx] x [0, Ly], avec dp/dn = 0
-sur les quatre côtés et moyenne(p) = 0. Aucune correction de vitesse ici.
+HYPOTHÈSE DE RACCORDEMENT : maillage cartésien uniforme décalé (MAC).
+- pression p[j, i] au centre des cellules : forme (ny, nx) ;
+- vitesse horizontale u_etoile2 aux faces verticales : (ny, nx + 1) ;
+- vitesse verticale v_etoile2 aux faces horizontales : (ny + 1, nx).
+Les tableaux fournis ne contiennent aucune couche fantôme supplémentaire.
+L'indice j augmente avec y et l'indice i avec x.
+Les faces normales des quatre parois doivent avoir une vitesse nulle.
+Le couvercle glisse tangentiellement : sa vitesse verticale reste nulle.
 
-CONVENTION À PARTAGER AVEC LES COLLÈGUES
-Les pressions et b sont stockés AUX CENTRES des cellules d'une grille uniforme.
-Un tableau a la forme (ny, nx) : p[j, i], j pour y et i pour x.
-Les parois sont aux faces extérieures, pas aux centres des cellules extrêmes.
-Le second membre futur sera b = (rho / dt) * divergence(u**, v**).
-Son calcul dépend du placement des vitesses : il reste donc extérieur au solveur.
+Avec une autre disposition des vitesses, adapter le calcul de divergence,
+NE PAS simplement redimensionner les tableaux pour obtenir les formes attendues.
+Vous pouvez aussi appeler poisson_jacobi(b, dx, dy) si b est déjà calculé.
+
+Unités : rho est la masse volumique constante ; dt, dx, dy et les vitesses
+sont exprimés dans un système cohérent. En variables adimensionnées avec
+p / (rho_ref * U_ref**2), utiliser rho=1.
+
+Utilisation dans la boucle de temps commune, après les étapes 1 et 2 :
+    from pression_jacobi import calculer_pression
+    p, infos = calculer_pression(u_etoile2, v_etoile2, dx, dy, dt, rho)
+Au pas suivant, on peut ajouter p_initial=p pour accélérer la convergence.
 """
 
-import argparse
 import numpy as np
 
 
@@ -82,8 +94,10 @@ def poisson_jacobi(b, dx, dy, *, p_initial=None,
         raise ValueError("max_iter doit être un entier positif.")
 
     # CONDITION D'EXISTENCE : la somme du Laplacien discret est nulle.
-    # Donc b doit avoir une moyenne nulle. Cette moyenne arithmétique convient ici parce que toutes les cellules ont le même volume.
-    # On refuse une incompatibilité significative : la supprimer silencieusement pourrait cacher une erreur dans les vitesses ou leur divergence.
+    # Donc b doit avoir une moyenne nulle. Cette moyenne arithmétique convient
+    # ici parce que toutes les cellules ont le même volume.
+    # On refuse une incompatibilité significative : la supprimer silencieusement
+    # pourrait cacher une erreur dans les vitesses ou leur divergence.
     moyenne_b = float(np.mean(b))
     norme_b = float(np.max(np.abs(b)))
     seuil_compatibilite = 100 * np.finfo(float).eps * norme_b
@@ -128,7 +142,8 @@ def poisson_jacobi(b, dx, dy, *, p_initial=None,
         if k == max_iter:
             break
 
-        # JACOBI : aucun élément de p n'est modifié pendant le calcul du nouveau tableau. Tous les voisins sont donc ceux de l'itération k.
+        # JACOBI : aucun élément de p n'est modifié pendant le calcul du nouveau
+        # tableau. Tous les voisins sont donc ceux de l'itération k.
         est, ouest, nord, sud = voisins_neumann(p)
         p_nouveau = (
             (est + ouest) * inv_dx2 + (nord + sud) * inv_dy2 - b
@@ -144,56 +159,68 @@ def poisson_jacobi(b, dx, dy, *, p_initial=None,
     )
 
 
-def exemple_analytique(nx=32, ny=32, afficher=False):
-    """Vérification autonome, sans vitesses intermédiaires ni calcul CFD complet."""
-    lx, ly = 1.0, 1.0
-    dx, dy = lx / nx, ly / ny
-    # Le premier centre est à dx/2 du mur, le dernier à Lx - dx/2.
-    x = (np.arange(nx) + 0.5) * dx
-    y = (np.arange(ny) + 0.5) * dy
-    X, Y = np.meshgrid(x, y)
+def calculer_pression(u_etoile2, v_etoile2, dx, dy, dt, rho,
+                     *, p_initial=None, rtol=1e-8, atol=1e-10,
+                     max_iter=100_000):
+    """Construit b à partir des vitesses reçues, puis résout Laplacien(p) = b.
 
-    # Solution choisie : p_exact = cos(pi*x/Lx) * cos(pi*y/Ly).
-    # Sa dérivée normale est nulle sur tous les murs, car sin(0)=sin(pi)=0.
-    # Son Laplacien continu vaut -[(pi/Lx)^2 + (pi/Ly)^2] * p_exact.
-    p_exact = np.cos(np.pi * X / lx) * np.cos(np.pi * Y / ly)
-    b = -((np.pi / lx)**2 + (np.pi / ly)**2) * p_exact
-    p, infos = poisson_jacobi(b, dx, dy)
-    erreur = float(np.max(np.abs(p - p_exact)))
+    u_etoile2 et v_etoile2 sont les résultats APRÈS advection et diffusion.
+    Retour : p de forme (ny, nx) et dictionnaire infos de convergence.
+    Les tableaux de vitesse ne sont pas modifiés.
+    La pression est définie à une constante près : on impose moyenne(p)=0.
+    Une erreur est signalée si le raccordement ou la convergence est incorrect.
+    """
+    for nom, valeur in (("dx", dx), ("dy", dy), ("dt", dt), ("rho", rho)):
+        if not np.isscalar(valeur) or not np.isfinite(valeur) or valeur <= 0:
+            raise ValueError(f"{nom} doit être un nombre fini strictement positif.")
 
-    print(f"Maillage : {nx} x {ny} cellules")
-    print(f"Itérations Jacobi : {infos['iterations']}")
-    print(f"Résidu maximal : {infos['residu_inf']:.3e}")
-    print(f"Seuil demandé : {infos['seuil']:.3e}")
-    print(f"Moyenne de p : {np.mean(p):.3e}")
-    print(f"Erreur maximale par rapport à la solution continue : {erreur:.3e}")
-    # L'erreur à la solution continue ne devient pas nulle en itérant davantage :
-    # il reste une erreur de discrétisation spatiale. Raffiner la grille doit
-    # la réduire d'environ un facteur 4 quand dx et dy sont divisés par 2.
+    u = np.asarray(u_etoile2, dtype=float)
+    v = np.asarray(v_etoile2, dtype=float)
+    if u.ndim != 2 or v.ndim != 2:
+        raise ValueError("Les vitesses doivent être des tableaux 2D.")
+    ny, nx = u.shape[0], u.shape[1] - 1
+    if nx < 2 or ny < 2 or v.shape != (ny + 1, nx):
+        raise ValueError(
+            "Maillage MAC attendu : u de forme (ny, nx+1), "
+            "v de forme (ny+1, nx), nx et ny >= 2."
+        )
+    if not np.all(np.isfinite(u)) or not np.all(np.isfinite(v)):
+        raise ValueError("Les vitesses contiennent des valeurs non finies.")
 
-    if afficher:
-        import matplotlib.pyplot as plt
-        fig, axes = plt.subplots(1, 3, figsize=(13, 4), constrained_layout=True)
-        for ax, champ, titre in zip(
-            axes[:2], (p, p - p_exact), ("Pression Jacobi", "Erreur spatiale")
-        ):
-            carte = ax.pcolormesh(X, Y, champ, shading="nearest", cmap="coolwarm")
-            fig.colorbar(carte, ax=ax)
-            ax.set(xlabel="x", ylabel="y", title=titre, aspect="equal")
-        axes[2].semilogy(infos["historique_residu"], label="Résidu maximal")
-        axes[2].axhline(infos["seuil"], linestyle="--", color="black", label="Seuil")
-        axes[2].set(xlabel="Itération k", ylabel="Norme infinie", title="Convergence")
-        axes[2].legend()
-        plt.show()
-    return erreur
+    # Le problème de pression prescrit impose dp/dn=0. Les vitesses
+    # intermédiaires doivent donc déjà respecter l'imperméabilité des murs.
+    # On refuse les entrées incorrectes plutôt que de les changer à votre insu.
+    # Les valeurs normales prescrites à zéro doivent être affectées explicitement
+    # par le code commun avant cet appel (ce ne sont pas les vitesses tangentielles).
+    if (np.any(u[:, 0] != 0.0) or np.any(u[:, -1] != 0.0)
+            or np.any(v[0, :] != 0.0) or np.any(v[-1, :] != 0.0)):
+        raise ValueError(
+            "Imposer u[:,0]=u[:,-1]=0 et v[0,:]=v[-1,:]=0 "
+            "aux faces des murs avant le calcul de pression."
+        )
+
+    # DIVERGENCE AU CENTRE DE CHAQUE CELLULE :
+    # dérivée en x = (u_face_droite - u_face_gauche) / dx ;
+    # dérivée en y = (v_face_haute - v_face_basse) / dy.
+    # Les différences de faces partagées se compensent dans la somme globale.
+    # Avec des flux normaux nuls aux murs, la moyenne est donc nulle à l'arrondi près.
+    divergence = (u[:, 1:] - u[:, :-1]) / dx + (v[1:, :] - v[:-1, :]) / dy
+
+    # SECOND MEMBRE DU TP : b = rho/dt * divergence(u**, v**).
+    # Cette fois, aucune solution analytique n'intervient dans les données.
+    b = (rho / dt) * divergence
+
+    # On délègue uniquement la résolution elliptique à Jacobi.
+    # p_initial est une estimation de départ, jamais une pression imposée.
+    p, infos = poisson_jacobi(
+        b, dx, dy, p_initial=p_initial,
+        rtol=rtol, atol=atol, max_iter=max_iter
+    )
+    infos["divergence_entree_inf"] = float(np.max(np.abs(divergence)))
+    return p, infos
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--nx", type=int, default=32)
-    parser.add_argument("--ny", type=int, default=32)
-    parser.add_argument("--plot", action="store_true", help="Afficher les figures.")
-    args = parser.parse_args()
-    if args.nx < 2 or args.ny < 2:
-        parser.error("nx et ny doivent être supérieurs ou égaux à 2.")
-    exemple_analytique(args.nx, args.ny, args.plot)
+    # Sans les données de vos collègues, aucun calcul physique ne peut démarrer.
+    print("Module prêt : importez calculer_pression dans votre programme CFD.")
+    print("Fournissez u**, v**, dx, dy, dt et rho après les étapes 1 et 2.")
