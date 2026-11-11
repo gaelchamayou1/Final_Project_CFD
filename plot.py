@@ -2,10 +2,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-def plot_results(u, v, L, Re, times, K_hist, P_hist):
+def plot_results(u, v, L, Re, times, K_hist, P_hist, title="", save_path=None):
     """
     Plots the final velocity field (magnitude + streamlines)
     and the time history of K(t) and P(t).
+    title     : figure title (e.g. the methods used for each step)
+    save_path : if given, the figure is saved there as a PNG
     Arrays u, v of shape (Ny, Nx), index [j, i] <-> (y, x).
     """
     Ny, Nx = u.shape
@@ -28,5 +30,8 @@ def plot_results(u, v, L, Re, times, K_hist, P_hist):
     ax[2].set_xlabel("t (s)")
     ax[2].set_title("Lid power P(t)")
 
+    fig.suptitle(title)
     plt.tight_layout()
+    if save_path is not None:
+        fig.savefig(save_path, dpi=150)
     plt.show()
