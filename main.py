@@ -11,7 +11,7 @@ import numpy as np
 from advection_diffusion import step_prediction, apply_boundary_conditions
 from mass_balance import compute_pressure
 from projection import correction_step
-from plot import plot_results
+from plot import plot_results, animate_results
 
 
 # ---------------- Physical parameters ----------------
@@ -28,6 +28,7 @@ dx = dy = L / (N - 1)
 dt = 0.5 * min(dx / U, dx**2 / (4 * nu))
 t_end = 20.0                   # final time (s), i.e. 20 tau_lid
 steady_tol = 1e-7              # stop when max|u^{n+1} - u^n| / dt < steady_tol
+snapshot_every = 25            # store (t, u, v) every 25 steps for the animation
 
 # ---------------- Methods used for each step ----------------
 METHODS = {
@@ -45,6 +46,7 @@ v = np.zeros((N, N))
 p = np.zeros((N, N))
 
 times, K_hist, P_hist = [], [], []
+snapshots = []         # list of (t, u, v) used to animate the flow
 t = 0.0
 n = 0
 
@@ -79,6 +81,9 @@ while t < t_end:
     change = max(np.max(np.abs(u_new - u)), np.max(np.abs(v_new - v))) / dt
     u, v = u_new, v_new
 
+    if n % snapshot_every == 0:
+        snapshots.append((t, u.copy(), v.copy()))
+
     if n % 100 == 0:
         print(f"n={n:6d}  t={t:7.3f}  K={K:.5e}  P={P:.5e}  change={change:.2e}")
 
@@ -101,3 +106,6 @@ np.savetxt(f"results/{run_name}.csv", np.column_stack([times, K_hist, P_hist]),
 title = " | ".join(f"{step}: {method}" for step, method in METHODS.items())
 plot_results(u, v, L, Re, times, K_hist, P_hist, title=title,
              save_path=f"results/{run_name}.png")
+
+# GIF: evolution of the velocity field versus time
+animate_results(snapshots, L, title=title, save_path=f"results/{run_name}.gif")
