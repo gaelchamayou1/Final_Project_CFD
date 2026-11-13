@@ -1,23 +1,47 @@
 import numpy as np
 from numba import njit
 
+
 @njit(fastmath=True)
-def compute_prediction(u, v, dx, dy, dt, nu):
+def upwind_derivative(f, j, i, dj, di, c, h, order):
     """
-    Computes the predicted velocity (u**, v**) by combining:
-      - Advection: 1st-order upwind scheme
-      - Diffusion: 2nd-order centred FTCS scheme
-    Inputs:
-        u, v   : 2D arrays (Ny, Nx) of the velocities at time n
-        dx, dy : Grid spacing (m)
-        dt     : Time step (s)
-        nu     : Kinematic viscosity (m²/s)
-    Outputs:
-        u_ss, v_ss : Predicted velocity fields (u**, v**)
+    Upwind derivative of f at node (j, i) in the direction (dj, di) = (0, 1) for x or (1, 0) for y.
+      c     : advection velocity in that direction (gives the upwind side)
+      h     : grid spacing in that direction
+      order : 1 -> 1st-order upwind
+              2 -> 2nd-order upwind (Course, cheat sheet: 2nd-order backward/forward formulas)
+    Next to a wall the node f[j - 2*dj, i - 2*di] (or + side) does not exist,
+    so the 1st-order formula is used there.
+    """
+    Ny, Nx = f.shape
+    f0 = f[j, i]
+
+    if c > 0.0:   # information comes from the "minus" side
+        jm2, im2 = j - 2 * dj, i - 2 * di
+        if order == 2 and jm2 >= 0 and im2 >= 0:
+            return (3.0 * f0 - 4.0 * f[j - dj, i - di] + f[jm2, im2]) / (2.0 * h)
+        return (f0 - f[j - dj, i - di]) / h
+    else:         # information comes from the "plus" side
+        jp2, ip2 = j + 2 * dj, i + 2 * di
+        if order == 2 and jp2 <= Ny - 1 and ip2 <= Nx - 1:
+            return (-3.0 * f0 + 4.0 * f[j + dj, i + di] - f[jp2, ip2]) / (2.0 * h)
+        return (f[j + dj, i + di] - f0) / h
+
+
+@njit(fastmath=True)
+def compute_rhs(u, v, dx, dy, nu, order):
+    """
+    Right-hand side of the prediction step (Steps 1 + 2) on interior nodes:
+        rhs_u = -(u du/dx + v du/dy) + nu * laplacian(u)
+        rhs_v = -(u dv/dx + v dv/dy) + nu * laplacian(v)
+      - Advection: upwind, 1st or 2nd order (order = 1 or 2)
+      - Diffusion: 2nd-order centred
+    Wall nodes are left at 0 (boundary conditions are imposed elsewhere).
+    Arrays of shape (Ny, Nx), index [j, i] <-> (y, x).
     """
     Ny, Nx = u.shape
-    u_ss = np.copy(u)
-    v_ss = np.copy(v)
+    rhs_u = np.zeros_like(u)
+    rhs_v = np.zeros_like(v)
 
     dx2 = dx * dx
     dy2 = dy * dy
@@ -27,14 +51,11 @@ def compute_prediction(u, v, dx, dy, dt, nu):
             u_c = u[j, i]
             v_c = v[j, i]
 
-            # 1. Upwind advection (1st order)
-            # Derivatives of u
-            du_dx = (u_c - u[j, i - 1]) / dx if u_c > 0.0 else (u[j, i + 1] - u_c) / dx
-            du_dy = (u_c - u[j - 1, i]) / dy if v_c > 0.0 else (u[j + 1, i] - u_c) / dy
-
-            # Derivatives of v
-            dv_dx = (v_c - v[j, i - 1]) / dx if u_c > 0.0 else (v[j, i + 1] - v_c) / dx
-            dv_dy = (v_c - v[j - 1, i]) / dy if v_c > 0.0 else (v[j + 1, i] - v_c) / dy
+            # 1. Upwind advection
+            du_dx = upwind_derivative(u, j, i, 0, 1, u_c, dx, order)
+            du_dy = upwind_derivative(u, j, i, 1, 0, v_c, dy, order)
+            dv_dx = upwind_derivative(v, j, i, 0, 1, u_c, dx, order)
+            dv_dy = upwind_derivative(v, j, i, 1, 0, v_c, dy, order)
 
             adv_u = u_c * du_dx + v_c * du_dy
             adv_v = u_c * dv_dx + v_c * dv_dy
@@ -46,11 +67,10 @@ def compute_prediction(u, v, dx, dy, dt, nu):
             diff_v = (v[j, i + 1] - 2.0 * v_c + v[j, i - 1]) / dx2 + \
                      (v[j + 1, i] - 2.0 * v_c + v[j - 1, i]) / dy2
 
-            # 3. Explicit Euler step
-            u_ss[j, i] = u_c + dt * (-adv_u + nu * diff_u)
-            v_ss[j, i] = v_c + dt * (-adv_v + nu * diff_v)
+            rhs_u[j, i] = -adv_u + nu * diff_u
+            rhs_v[j, i] = -adv_v + nu * diff_v
 
-    return u_ss, v_ss
+    return rhs_u, rhs_v
 
 
 @njit(fastmath=True)
@@ -79,18 +99,47 @@ def apply_boundary_conditions(u_ss, v_ss, U_lid):
     return u_ss, v_ss
 
 
-def step_prediction(u, v, dx, dy, dt, nu, t, U_ref=1.0, L=1.0):
-    """
-    Interface called by the global time loop in main.py.
-    """
-    # Lid ramp law: U_t(t) = U * (1 - exp(-t / tau)) with tau = L / U
-    tau_lid = L / U_ref
-    U_lid = U_ref * (1.0 - np.exp(-t / tau_lid))
+def lid_velocity(t, U_ref, L):
+    """Lid ramp law: U_t(t) = U * (1 - exp(-t / tau)) with tau = L / U."""
+    return U_ref * (1.0 - np.exp(-t / (L / U_ref)))
 
-    # Steps 1 + 2: advection + diffusion
-    u_ss, v_ss = compute_prediction(u, v, dx, dy, dt, nu)
 
-    # Boundary conditions
-    u_ss, v_ss = apply_boundary_conditions(u_ss, v_ss, U_lid)
+def step_prediction(u, v, dx, dy, dt, nu, t, U_ref=1.0, L=1.0,
+                    advection="upwind1", time="euler"):
+    """
+    Steps 1 + 2 of the fractional-step method: predicted velocity (u**, v**)
+    from the velocity at time t^n, with BCs at the new time t = t^{n+1}.
+      advection : "upwind1" or "upwind2"
+      time      : "euler" -> Forward Euler
+                  "rk3"   -> RK3 Heun (Course, §3.9.4):
+                     k1 = f(u^n)
+                     k2 = f(u^n + dt/3 k1)
+                     k3 = f(u^n + 2dt/3 k2)
+                     u** = u^n + dt/4 (k1 + 3 k3)
+    """
+    order = 1 if advection == "upwind1" else 2
+    t_n = t - dt
+
+    if time == "euler":
+        ku, kv = compute_rhs(u, v, dx, dy, nu, order)
+        u_ss = u + dt * ku
+        v_ss = v + dt * kv
+
+    else:  # "rk3"
+        k1u, k1v = compute_rhs(u, v, dx, dy, nu, order)
+
+        u1, v1 = apply_boundary_conditions(u + dt / 3 * k1u, v + dt / 3 * k1v,
+                                           lid_velocity(t_n + dt / 3, U_ref, L))
+        k2u, k2v = compute_rhs(u1, v1, dx, dy, nu, order)
+
+        u2, v2 = apply_boundary_conditions(u + 2 * dt / 3 * k2u, v + 2 * dt / 3 * k2v,
+                                           lid_velocity(t_n + 2 * dt / 3, U_ref, L))
+        k3u, k3v = compute_rhs(u2, v2, dx, dy, nu, order)
+
+        u_ss = u + dt / 4 * (k1u + 3 * k3u)
+        v_ss = v + dt / 4 * (k1v + 3 * k3v)
+
+    # Boundary conditions at t^{n+1}
+    u_ss, v_ss = apply_boundary_conditions(u_ss, v_ss, lid_velocity(t, U_ref, L))
 
     return u_ss, v_ss

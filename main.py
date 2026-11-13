@@ -1,15 +1,15 @@
 """
 Lid-driven cavity solver: fractional-step method (Resolution_method.pdf, slide 9).
 
-    Steps 1 + 2 : prediction u**      -> advection_diffusion.step_prediction
-    Step 3      : Poisson for p       -> mass_balance.jacobi_solver or sor_solver
+    Steps 1 + 2 : prediction u**      -> advection_diffusion.step_prediction (Euler or RK3)
+    Step 3      : Poisson for p       -> mass_balance.sor_solver
     Step 4      : correction u^{n+1}  -> projection.correction_step
 """
 import os
 import numpy as np
 
 from advection_diffusion import step_prediction, apply_boundary_conditions
-from mass_balance import jacobi_solver, sor_solver
+from mass_balance import sor_solver
 from projection import correction_step
 from plot import plot_results, animate_results
 
@@ -17,12 +17,12 @@ from plot import plot_results, animate_results
 # ---------------- Physical parameters ----------------
 L = 1.0          # cavity size (m)
 U = 1.0          # lid velocity (m/s)
-Re = 100.0       # Reynolds number
+Re = 1000.0       # Reynolds number
 rho = 1.0        # density (kg/m^3)
 nu = U * L / Re  # kinematic viscosity (m^2/s)
 
 # ---------------- Numerical parameters ----------------
-N = 41                         # nodes per direction (walls included)
+N = 201                         # nodes per direction (walls included)
 dx = dy = L / (N - 1)
 # Explicit stability: CFL < 1 (advection) and nu*dt/dx^2 < 1/4 (2D diffusion)
 dt = 0.5 * min(dx / U, dx**2 / (4 * nu))
@@ -32,9 +32,10 @@ snapshot_every = 25            # store (t, u, v) every 25 steps for the animatio
 
 # ---------------- Methods used for each step ----------------
 METHODS = {
-    "advection": "upwind1",     # Step 1: 1st-order upwind
-    "diffusion": "FTCS",        # Step 2: explicit Euler + centred 2nd order
-    "poisson":   "sor",         # Step 3: "jacobi" or "sor"
+    "time":      "rk3",         # Steps 1 + 2 time scheme: "euler" or "rk3"
+    "advection": "upwind2",     # Step 1: "upwind1" or "upwind2"
+    "diffusion": "centred2",    # Step 2: 2nd-order centred
+    "poisson":   "sor",         # Step 3: SOR (over-relaxed Gauss-Seidel)
     "gradient":  "centred2",    # Step 4: 2nd-order centred gradient
 }
 run_name = "_".join(METHODS.values()) + f"_Re{Re:.0f}_N{N}"
@@ -56,13 +57,11 @@ while t < t_end:
     n += 1
 
     # Steps 1 + 2: prediction (BCs at the new time t^{n+1})
-    u_ss, v_ss = step_prediction(u, v, dx, dy, dt, nu, t, U_ref=U, L=L)
+    u_ss, v_ss = step_prediction(u, v, dx, dy, dt, nu, t, U_ref=U, L=L,
+                                 advection=METHODS["advection"], time=METHODS["time"])
 
     # Step 3: pressure (previous p used as initial guess)
-    if METHODS["poisson"] == "jacobi":
-        p = jacobi_solver(u_ss, v_ss, dx, dy, dt, rho, p_init=p)
-    else:
-        p = sor_solver(u_ss, v_ss, dx, dy, dt, rho, p_init=p)
+    p = sor_solver(u_ss, v_ss, dx, dy, dt, rho, p_init=p)
 
     # Step 4: correction
     u_new, v_new = correction_step(u_ss, v_ss, p, dx, dy, dt, rho)
