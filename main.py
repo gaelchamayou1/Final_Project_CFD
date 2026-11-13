@@ -2,14 +2,14 @@
 Lid-driven cavity solver: fractional-step method (Resolution_method.pdf, slide 9).
 
     Steps 1 + 2 : prediction u**      -> advection_diffusion.step_prediction
-    Step 3      : Poisson for p       -> mass_balance.compute_pressure
+    Step 3      : Poisson for p       -> mass_balance.jacobi_solver or sor_solver
     Step 4      : correction u^{n+1}  -> projection.correction_step
 """
 import os
 import numpy as np
 
 from advection_diffusion import step_prediction, apply_boundary_conditions
-from mass_balance import compute_pressure
+from mass_balance import jacobi_solver, sor_solver
 from projection import correction_step
 from plot import plot_results, animate_results
 
@@ -34,7 +34,7 @@ snapshot_every = 25            # store (t, u, v) every 25 steps for the animatio
 METHODS = {
     "advection": "upwind1",     # Step 1: 1st-order upwind
     "diffusion": "FTCS",        # Step 2: explicit Euler + centred 2nd order
-    "poisson":   "jacobi",      # Step 3: Jacobi iterations
+    "poisson":   "sor",         # Step 3: "jacobi" or "sor"
     "gradient":  "centred2",    # Step 4: 2nd-order centred gradient
 }
 run_name = "_".join(METHODS.values()) + f"_Re{Re:.0f}_N{N}"
@@ -59,7 +59,10 @@ while t < t_end:
     u_ss, v_ss = step_prediction(u, v, dx, dy, dt, nu, t, U_ref=U, L=L)
 
     # Step 3: pressure (previous p used as initial guess)
-    p = compute_pressure(u_ss, v_ss, dx, dy, dt, rho, p_init=p)
+    if METHODS["poisson"] == "jacobi":
+        p = jacobi_solver(u_ss, v_ss, dx, dy, dt, rho, p_init=p)
+    else:
+        p = sor_solver(u_ss, v_ss, dx, dy, dt, rho, p_init=p)
 
     # Step 4: correction
     u_new, v_new = correction_step(u_ss, v_ss, p, dx, dy, dt, rho)
